@@ -130,7 +130,8 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         about += "<p style=\"width:500px\">"        
         about += "This plugin clusters all response bodies by similarity and shows a summary, one request/response per cluster. "
         about += 'Adjust similarity in the options if you get too few or too many entries in the "One member of each cluster" '
-        about += "tab. The plugin will allow a tester to get an overview of the tested website's responses. As similarity comparison "
+        about += "tab. The plugin will allow a tester to get an overview of the tested website's responses from all tools (scanner, proxy, etc.). "
+        about += "As similarity comparison "
         about += "can use a lot of ressources, only small, in-scope responses that have interesting response codes, "
         about += "file extensions and mime types are processed. "
         about += "</p>"
