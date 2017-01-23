@@ -6,6 +6,6 @@ SerialVersion: 0
 MinPlatformVersion: 0
 ProOnly: False
 Author: Floyd
-ShortDescription: Clusters all response bodies by similarity and shows a summary, one request/response per cluster
+ShortDescription: Clusters similar responses together.
 EntryPoint: ResponseClusterer.py
 BuildCommand: 
