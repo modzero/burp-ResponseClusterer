@@ -125,6 +125,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         
         about = "<html>"
         about += "Author: floyd, @floyd_ch, http://www.floyd.ch<br>"
+        about += "modzero AG, http://www.modzero.ch<br>"
         about += "<br>"
         about += "<h3>Getting an overview of the tested website</h3>"
         about += "<p style=\"width:500px\">"        
