@@ -1,0 +1,10 @@
+Uuid: e63f09f290ad4d9ea20031e84767b303
+ExtensionType: 2
+Name: Response Clusterer
+ScreenVersion: 0.0.1
+SerialVersion: 1
+MinPlatformVersion: 0
+ProOnly: False
+Author: Floyd
+ShortDescription: Clusters similar responses together.
+EntryPoint: ResponseClusterer.py
