@@ -40,7 +40,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         self._helpers = callbacks.getHelpers()
         
         # set our extension name
-        callbacks.setExtensionName("ResponseClusterer")
+        callbacks.setExtensionName("Response Clusterer")
         
         # create the log and a lock on which to synchronize when adding log entries
         self._log = ArrayList()
@@ -125,6 +125,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         
         about = "<html>"
         about += "Author: floyd, @floyd_ch, http://www.floyd.ch<br>"
+        about += "modzero AG, http://www.modzero.ch<br>"
         about += "<br>"
         about += "<h3>Getting an overview of the tested website</h3>"
         about += "<p style=\"width:500px\">"        
@@ -204,7 +205,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
     #
     
     def getTabCaption(self):
-        return "ResponseClusterer"
+        return "Response Clusterer"
     
     def getUiComponent(self):
         return self._main_jtabedpane

@@ -5,6 +5,6 @@ ScreenVersion: 0.0.1
 SerialVersion: 1
 MinPlatformVersion: 0
 ProOnly: False
-Author: Floyd
+Author: floyd, modzero AG
 ShortDescription: Clusters similar responses together.
 EntryPoint: ResponseClusterer.py
