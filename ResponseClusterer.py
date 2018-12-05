@@ -2,6 +2,8 @@ from burp import IBurpExtender
 from burp import ITab
 from burp import IHttpListener
 from burp import IMessageEditorController
+from burp import IHttpRequestResponse
+from burp import IHttpService
 from java.awt import Component
 from java.awt import GridBagLayout
 from java.awt import GridBagConstraints
@@ -24,6 +26,8 @@ from threading import Lock
 
 import difflib
 import time
+import urlparse
+import pickle
 
 class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController, AbstractTableModel, ActionListener, DocumentListener):
     
@@ -56,6 +60,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         logTable = Table(self)
         scrollPane = JScrollPane(logTable)
         self._splitpane.setLeftComponent(scrollPane)
+        
+        # List of log entries
+        self._log_entries = []
 
         # tabs with request/response viewers
         tabs = JTabbedPane()
@@ -71,8 +78,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         gbc = GridBagConstraints()
         self._optionsJPanel.setLayout(gridBagLayout)
         
-        
-        self.max_clusters = 200
+        self.max_clusters = 500
         self.JLabel_max_clusters = JLabel("Maximum amount of clusters: ")
         gbc.gridy=0
         gbc.gridx=0
@@ -158,9 +164,17 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         # register ourselves as an HTTP listener
         callbacks.registerHttpListener(self)
         
-        #clusters will grow up to self.max_clusters response bodies...
+        # clusters will grow up to self.max_clusters response bodies...
         self._clusters = set()        
         self.Similarity = Similarity()
+        
+        # Now load the already stored 
+        self._lock.acquire()
+        log_entries_from_storage = self.load_project_setting("log_entries")
+        if log_entries_from_storage:
+            for toolFlag, req, resp, url in log_entries_from_storage:
+                self.add_new_log_entry(toolFlag, req, resp, url)
+        self._lock.release()
         
     #
     # implement what happens when options are changed
@@ -219,24 +233,24 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
             if len(self._clusters) >= self.max_clusters:
                 return
             resp = messageInfo.getResponse()
-            iResponseInfo = self._helpers.analyzeResponse(resp)
-            req = messageInfo.getRequest()
-            iRequestInfo = self._helpers.analyzeRequest(messageInfo)
-            mime_type = iResponseInfo.getStatedMimeType()
             if len(resp) >= self.response_max_size:
-                #print "Message was too long"
+                print "Message was too long"
                 return
+            iResponseInfo = self._helpers.analyzeResponse(resp)
+            mime_type = iResponseInfo.getStatedMimeType()
             if mime_type in self.uninteresting_mime_types:
-                #print "Mime type", mime_type, "is ignored"
+                print "Mime type", mime_type, "is ignored"
                 return
             if iResponseInfo.getStatusCode() in self.uninteresting_status_codes:
-                #print "Status code", iResponseInfo.getStatusCode(), "is ignored"
+                print "Status code", iResponseInfo.getStatusCode(), "is ignored"
                 return
+            req = messageInfo.getRequest()
+            iRequestInfo = self._helpers.analyzeRequest(messageInfo)
             if '.' in iRequestInfo.getUrl().getFile() and iRequestInfo.getUrl().getFile().split('.')[-1] in self.uninteresting_url_file_extensions:
-                #print iRequestInfo.getUrl().getFile().split('.')[-1], "is an ignored file extension"
+                print iRequestInfo.getUrl().getFile().split('.')[-1], "is an ignored file extension"
                 return
             if not self._callbacks.isInScope(iRequestInfo.getUrl()):
-                #print iRequestInfo.getUrl(), "is not in scope"
+                print iRequestInfo.getUrl(), "is not in scope"
                 return
             body = resp[iResponseInfo.getBodyOffset():]
             self._lock.acquire()
@@ -251,17 +265,27 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
                 if similarity_func(str(body), str(item), self.similarity):
                     self._lock.release()
                     return #break
-            else: #when no break/return occures in the for loop
-                self._clusters.add((iResponseInfo.getStatusCode(), body))
-                # create a new log entry with the message details
-                row = self._log.size()
-                self._log.add(LogEntry(toolFlag, self._callbacks.saveBuffersToTempFiles(messageInfo), iRequestInfo.getUrl()))
-                self.fireTableRowsInserted(row, row)
+            else: #when no break/return occures in the for loop    
+                self.add_new_log_entry(toolFlag, req, resp, iRequestInfo.getUrl().toString())
+                self.save_project_setting("log_entries", self._log_entries)
             taken_time = time.time() - start_time
             if taken_time > 0.5:
-                print "Performance problems: Plugin took", taken_time, "seconds to process request"
+                print "Plugin took", taken_time, "seconds to process request... body length:", len(body), "current cluster length:", len(self._clusters)
+                print "URL:", str(iRequestInfo.getUrl()), 
             self._lock.release()
-
+    
+    def add_new_log_entry(self, toolFlag, request, response, service_url):
+        self._log_entries.append((toolFlag, request, response, service_url))
+        iResponseInfo = self._helpers.analyzeResponse(response)
+        body = response[iResponseInfo.getBodyOffset():]
+        self._clusters.add((iResponseInfo.getStatusCode(), body))
+        row = self._log.size()
+        service = CustomHttpService(service_url)
+        r = CustomRequestResponse(None, None, service, request, response)
+        iRequestInfo = self._helpers.analyzeRequest(r)
+        self._log.add(LogEntry(toolFlag, self._callbacks.saveBuffersToTempFiles(r), iRequestInfo.getUrl()))
+        self.fireTableRowsInserted(row, row)
+    
     #
     # extend AbstractTableModel
     #
@@ -303,6 +327,36 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
 
     def getResponse(self):
         return self._currentlyDisplayedItem.getResponse()
+    
+    def save_project_setting(self, name, value):
+        value = pickle.dumps(value).encode("base64")
+        request = "GET /"+name+" HTTP/1.0\r\n\r\n" \
+                  "You can ignore this item in the site map. It was created by the ResponseClusterer extension. The \n" \
+                  "reason is that the Burp API is missing a certain functionality to save settings. \n" \
+                  "TODO Burp API limitation: This is a hackish way to be able to store project-scope settings.\n" \
+                  "We don't want to restore requests/responses of tabs in a totally different Burp project.\n" \
+                  "However, unfortunately there is no saveExtensionProjectSetting in the Burp API :(\n" \
+                  "So we have to abuse the addToSiteMap API to store project-specific things\n" \
+                  "Even when using this hack we currently cannot persist Collaborator interaction checks\n" \
+                  "(IBurpCollaboratorClientContext is not serializable and Threads loose their Python class\n" \
+                  "functionality when unloaded) due to Burp API limitations."
+        response = None
+        if value:
+            response = "HTTP/1.1 200 OK\r\n" + value
+        rr = CustomRequestResponse(name, '', CustomHttpService('http://responseclustererextension.local/'), request, response)
+        self._callbacks.addToSiteMap(rr)
+
+    def load_project_setting(self, name):
+        rrs = self._callbacks.getSiteMap('http://responseclustererextension.local/'+name)
+        if rrs:
+            rr = rrs[0]
+            if rr.getResponse():
+                val = "\r\n".join(FloydsHelpers.jb2ps(rr.getResponse()).split("\r\n")[1:])
+                return pickle.loads(val.decode("base64"))
+            else:
+                return None
+        else:
+            return None
         
 
 class Similarity(object):
@@ -349,6 +403,106 @@ class Similarity(object):
     def upper_bound_similarity(self, a, b):
         return 2.0*(len(a))/(len(a)+len(b))
 
+class CustomHttpService(IHttpService):
+    def __init__(self, url):
+        x = urlparse.urlparse(url)
+        if x.scheme in ("http", "https"):
+            self._protocol = x.scheme
+        else:
+            raise ValueError()
+        self._host = x.hostname
+        if not x.hostname:
+            self._host = ""
+        self._port = x.port
+        if not self._port:
+            if self._protocol == "http":
+                self._port = 80
+            elif self._protocol == "https":
+                self._port = 443
+
+    def getHost(self):
+        return self._host
+
+    def getPort(self):
+        return self._port
+
+    def getProtocol(self):
+        return self._protocol
+
+    def __str__(self):
+        return CustomHttpService.to_url(self)
+
+    @staticmethod
+    def to_url(service):
+        a = FloydsHelpers.u2s(service.getProtocol()) + "://" + FloydsHelpers.u2s(service.getHost())
+        if service.getPort():
+            a += ":" + str(service.getPort())
+        return a + "/"
+
+
+class CustomRequestResponse(IHttpRequestResponse):
+    # Every call in the code to getRequest or getResponse must be followed by
+    # callbacks.analyzeRequest or analyze Response OR
+    # FloydsHelpers.jb2ps OR
+    # another operation such as len()
+
+    def __init__(self, comment, highlight, service, request, response):
+        self.com = comment
+        self.high = highlight
+        self.setHttpService(service)
+        self.setRequest(request)
+        self.setResponse(response)
+
+    def getComment(self):
+        return self.com
+
+    def getHighlight(self):
+        return self.high
+
+    def getHttpService(self):
+        return self.serv
+
+    def getRequest(self):
+        return self.req
+
+    def getResponse(self):
+        return self.resp
+
+    def setComment(self, comment):
+        self.com = comment
+
+    def setHighlight(self, color):
+        self.high = color
+
+    def setHttpService(self, httpService):
+        if isinstance(httpService, str):
+            self.serv = CustomHttpService(httpService)
+        else:
+            self.serv = httpService
+
+    def setRequest(self, message):
+        if isinstance(message, str):
+            self.req = FloydsHelpers.ps2jb(message)
+        else:
+            self.req = message
+
+    def setResponse(self, message):
+        if isinstance(message, str):
+            self.resp = FloydsHelpers.ps2jb(message)
+        else:
+            self.resp = message
+
+    def serialize(self):
+        # print type(self.com), type(self.high), type(CustomHttpService.to_url(self.serv)), type(self.req), type(self.resp)
+        return self.com, self.high, CustomHttpService.to_url(self.serv), FloydsHelpers.jb2ps(self.req), FloydsHelpers.jb2ps(self.resp)
+
+    def deserialize(self, serialized_object):
+        self.com, self.high, service_url, self.req, self.resp = serialized_object
+        self.req = FloydsHelpers.ps2jb(self.req)
+        self.resp = FloydsHelpers.ps2jb(self.resp)
+        self.serv = CustomHttpService(service_url)
+
+
 #
 # extend JTable to handle cell selection
 #
@@ -382,4 +536,37 @@ class LogEntry:
         self._requestResponse = requestResponse
         self._url = url
         return
-      
+
+class FloydsHelpers(object):
+    
+    @staticmethod
+    def jb2ps(arr):
+        """
+        Turns Java byte arrays into Python str
+        :param arr: [65, 65, 65]
+        :return: 'AAA'
+        """
+        return ''.join(map(lambda x: chr(x % 256), arr))
+
+    @staticmethod
+    def ps2jb(arr):
+        """
+        Turns Python str into Java byte arrays
+        :param arr: 'AAA'
+        :return: [65, 65, 65]
+        """
+        return [ord(x) if ord(x) < 128 else ord(x) - 256 for x in arr]
+
+    @staticmethod
+    def u2s(uni):
+        """
+        Turns unicode into str/bytes. Burp might pass invalid Unicode (e.g. Intruder Bit Flipper).
+        This seems to be the only way to say "give me the raw bytes"
+        :param uni: u'https://example.org/invalid_unicode/\xc1'
+        :return: 'https://example.org/invalid_unicode/\xc1'
+        """
+        if isinstance(uni, unicode):
+            return uni.encode("iso-8859-1", "ignore")
+        else:
+            return uni
+
