@@ -2,8 +2,8 @@ Uuid: e63f09f290ad4d9ea20031e84767b303
 ExtensionType: 2
 Name: Response Clusterer
 RepoName: response-clusterer
-ScreenVersion: 0.0.2
-SerialVersion: 3
+ScreenVersion: 0.0.3
+SerialVersion: 4
 MinPlatformVersion: 0
 ProOnly: False
 Author: floyd, modzero AG
