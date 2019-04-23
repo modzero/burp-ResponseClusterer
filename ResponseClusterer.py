@@ -158,23 +158,27 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         self._main_jtabedpane.addTab("Options", None, self._optionsJPanel, None)		
         self._main_jtabedpane.addTab("About & README", None, self._aboutJPanel, None)
         
-        # add the custom tab to Burp's UI
-        callbacks.addSuiteTab(self)
-        
-        # register ourselves as an HTTP listener
-        callbacks.registerHttpListener(self)
-        
         # clusters will grow up to self.max_clusters response bodies...
         self._clusters = set()        
         self.Similarity = Similarity()
         
         # Now load the already stored 
-        self._lock.acquire()
-        log_entries_from_storage = self.load_project_setting("log_entries")
-        if log_entries_from_storage:
-            for toolFlag, req, resp, url in log_entries_from_storage:
-                self.add_new_log_entry(toolFlag, req, resp, url)
-        self._lock.release()
+        with self._lock:
+            log_entries_from_storage = self.load_project_setting("log_entries")
+            if log_entries_from_storage:
+                for toolFlag, req, resp, url in log_entries_from_storage:
+                    try:
+                        self.add_new_log_entry(toolFlag, req, resp, url)
+                    except Exception as e:
+                        print "Exception when deserializing a stored log entry", toolFlag, url
+                        print e
+        
+        # Important: Do this at the very end (otherwise we could run into troubles locking up entire threads)
+        # add the custom tab to Burp's UI
+        callbacks.addSuiteTab(self)
+        
+        # register ourselves as an HTTP listener
+        callbacks.registerHttpListener(self)
         
     #
     # implement what happens when options are changed
@@ -190,7 +194,6 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         self.actionPerformed(None)
     
     def actionPerformed(self, actionEvent):
-        self._lock.acquire()
         self.use_quick_similar = self.JCheckBox_use_quick_similar.isSelected()
         try:
             self.max_clusters = int(self.JTextField_max_clusters.getText())
@@ -213,7 +216,6 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         
         print self.JCheckBox_use_quick_similar.isSelected(), self.JTextField_max_clusters.getText(), self.JTextField_similarity.getText(), self.JTextField_response_max_size.getText()
         
-        self._lock.release()
     #
     # implement ITab
     #
@@ -246,6 +248,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
                 return
             req = messageInfo.getRequest()
             iRequestInfo = self._helpers.analyzeRequest(messageInfo)
+            if not iRequestInfo.getUrl():
+                print "iRequestInfo.getUrl() returned None, so bailing out of analyzing this request"
+                return
             if '.' in iRequestInfo.getUrl().getFile() and iRequestInfo.getUrl().getFile().split('.')[-1] in self.uninteresting_url_file_extensions:
                 print iRequestInfo.getUrl().getFile().split('.')[-1], "is an ignored file extension"
                 return
@@ -253,26 +258,24 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
                 print iRequestInfo.getUrl(), "is not in scope"
                 return
             body = resp[iResponseInfo.getBodyOffset():]
-            self._lock.acquire()
-            start_time = time.time()
-            for response_code, item in self._clusters:
-                if not response_code == iResponseInfo.getStatusCode():
-                    #Different response codes -> different clusters
-                    continue
+            with self._lock:
                 similarity_func = self.Similarity.similar
                 if self.use_quick_similar:
                     similarity_func = self.Similarity.quick_similar
-                if similarity_func(str(body), str(item), self.similarity):
-                    self._lock.release()
-                    return #break
-            else: #when no break/return occures in the for loop    
-                self.add_new_log_entry(toolFlag, req, resp, iRequestInfo.getUrl().toString())
-                self.save_project_setting("log_entries", self._log_entries)
-            taken_time = time.time() - start_time
-            if taken_time > 0.5:
-                print "Plugin took", taken_time, "seconds to process request... body length:", len(body), "current cluster length:", len(self._clusters)
-                print "URL:", str(iRequestInfo.getUrl()), 
-            self._lock.release()
+                start_time = time.time()
+                for response_code, item in self._clusters:
+                    if not response_code == iResponseInfo.getStatusCode():
+                        #Different response codes -> different clusters
+                        continue
+                    if similarity_func(str(body), str(item), self.similarity):
+                        return #break
+                else: #when no break/return occures in the for loop    
+                    self.add_new_log_entry(toolFlag, req, resp, iRequestInfo.getUrl().toString())
+                    self.save_project_setting("log_entries", self._log_entries)
+                taken_time = time.time() - start_time
+                if taken_time > 0.5:
+                    print "Plugin took", taken_time, "seconds to process request... body length:", len(body), "current cluster length:", len(self._clusters)
+                    print "URL:", str(iRequestInfo.getUrl()), 
     
     def add_new_log_entry(self, toolFlag, request, response, service_url):
         self._log_entries.append((toolFlag, request, response, service_url))
@@ -413,7 +416,9 @@ class CustomHttpService(IHttpService):
         self._host = x.hostname
         if not x.hostname:
             self._host = ""
-        self._port = x.port
+        self._port = None
+        if x.port:
+             self._port = int(x.port)
         if not self._port:
             if self._protocol == "http":
                 self._port = 80
